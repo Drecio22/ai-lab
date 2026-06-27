@@ -1,0 +1,44 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs and temp files
+*.log
+*.tmp
+*.temp
+*.bak
+*.old
+*.orig
+*.rej
+
+# Environment and local config
+.env
+.env.*
+
+# Archives and databases
+*.zip
+*.7z
+*.rar
+*.sqlite
+*.db
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Node and Bun
+node_modules/
+.bun/
+
+# Coverage and build outputs
+coverage/
+dist/
+build/
+out/
