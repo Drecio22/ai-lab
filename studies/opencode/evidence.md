@@ -693,3 +693,150 @@ Related claims:
 
 Limitations:
 Worker module is fully mocked; code-block syntax highlighting is not exercised. The mock and React shim are test-only and do not affect production code.
+
+EVID-019
+Type:
+source-code
+
+Source:
+Static source inspection over anomalyco/opencode commit `ae53163cad0048b2351e258699e815f4f2110807`:
+- `packages/opencode/src/session/prompt.ts` lines 614-670, 1136-1285, 1405-1445.
+- `packages/opencode/src/provider/provider.ts` lines 1685-1830, 1913-1948, 1975-1981.
+- `packages/opencode/src/session/llm.ts` lines 88-116, 226-340, 357-381.
+- `packages/opencode/src/agent/agent.ts` lines 45-55, 280-316.
+- `packages/opencode/src/tool/task.ts` lines 130-200.
+
+Date:
+2026-06-27
+
+Summary:
+Static call trace for effective model resolution:
+
+1. Agent configuration shape allows an optional `model` with `providerID` and `modelID`; configured agent model strings are parsed into `item.model` during agent loading.
+2. `SessionPrompt.createUserMessage` resolves the model reference for a prompt as `input.model ?? ag.model ?? currentModel(input.sessionID)` and stores `{ providerID, modelID, variant }` on the `SessionV1.User` message.
+3. `currentModel(sessionID)` checks the session row's current model, then previous user messages with a model, then `provider.defaultModel()`.
+4. `Provider.defaultModel()` checks `cfg.model`, then recent `model.json`, then selects the first configured/available provider and sorted model.
+5. `SessionPrompt.runLoop` reads `lastUser.model`, calls `getModel(lastUser.model.providerID, lastUser.model.modelID, sessionID)`, creates the assistant message with the resolved `model.id` and `model.providerID`, and passes the concrete model to `SessionProcessor.create` and `handle.process`.
+6. `Provider.getModel` looks up the provider and model in provider state and returns the concrete `Provider.Model` or raises `ModelNotFoundError`; `Provider.getLanguage` converts that model into a cached AI SDK `LanguageModelV3` using provider SDK/model loaders.
+7. `SessionProcessor.process` calls `llm.stream(streamInput)` with the concrete model.
+8. `LLM.stream` obtains `provider.getLanguage(input.model)`, prepares the request, then either returns a native runtime stream if `experimentalNativeLlm` supports the provider/model or calls AI SDK `streamText` with `model: wrapLanguageModel({ model: language, ... })`.
+9. `TaskTool` subagent execution creates/reuses a child session and selects `next.model ?? { modelID: parentAssistant.modelID, providerID: parentAssistant.providerID }`, then invokes `SessionPrompt.prompt` for the child session with that explicit model.
+
+Component classification from this evidence:
+- Configuration: `Config`, `Agent`, provider catalog/config/auth state.
+- Resolver of model reference: `SessionPrompt.createUserMessage` for normal prompts; `TaskTool` for selecting a subagent child's explicit model input before calling `SessionPrompt.prompt`; `currentModel` and `Provider.defaultModel` as fallback helpers.
+- Provider model materialization: `Provider.getModel` and `Provider.getLanguage`.
+- Runtime selection: `LLM.stream` chooses native vs AI SDK adapter.
+- Final LLM invocation: native path `LLMNativeRuntime.stream`; AI SDK path `streamText(...)`.
+
+Related claims:
+- CLAIM-020
+- CLAIM-021
+- CLAIM-022
+- CLAIM-023
+
+Limitations:
+This is static source-code evidence only. It is scoped to the inspected commit and the traced `SessionPrompt` / `TaskTool` paths. It does not execute OpenCode, does not prove every client uses this path, does not inspect every command/subtask path exhaustively, and does not test provider-specific behavior.
+
+EVID-020
+Type:
+test-execution
+
+Source:
+`EXP-008-run-001`, temporary checkout of anomalyco/opencode commit `ae53163cad0048b2351e258699e815f4f2110807`, instrumented runtime test added temporarily to `packages/opencode/test/session/prompt.test.ts`.
+
+Date:
+2026-06-27
+
+Summary:
+Runtime validation of effective model propagation for the explicit `input.model` branch in the normal `SessionPrompt.prompt` path.
+
+Executed command:
+```text
+$env:PATH = "$env:APPDATA\npm;$env:PATH"; & "$env:APPDATA\npm\bun.cmd" test test/session/prompt.test.ts -t "EXP-008 observes explicit input model through prompt to runtime"
+```
+
+Result:
+- Passed: `1 pass`, `57 filtered out`, `0 fail`, `8 expect() calls`.
+
+Observed sequence:
+1. `SessionPrompt.createUserMessage` received explicit `input.model = { providerID: "test", modelID: "test-model" }` and selected the same model.
+2. The user message persisted `model = { providerID: "test", modelID: "test-model" }`.
+3. `Provider.getModel` returned `{ providerID: "test", modelID: "test-model" }`.
+4. `SessionPrompt.runLoop` used that returned model before assistant processing.
+5. `SessionProcessor.process` received `{ providerID: "test", modelID: "test-model" }`.
+6. `LLM.stream` received `{ providerID: "test", modelID: "test-model" }`.
+7. `LLM.stream` selected the AI SDK runtime path.
+8. `TestLLMServer` observed the final runtime request body with `model: "test-model"`.
+
+Related claims:
+- CLAIM-020
+- CLAIM-021
+- CLAIM-023
+
+Limitations:
+This run covers only explicit `input.model`. It does not dynamically validate `agent.model`, fallback `currentModel(sessionID)`, subagents, provider-specific behavior, or native runtime selection. Temporary instrumentation and dependency-resolution workarounds were used in a throwaway checkout and reverted for tracked files after execution.
+
+EVID-021
+Type:
+test-execution
+
+Source:
+`EXP-008-run-003`, temporary checkout of anomalyco/opencode commit `ae53163cad0048b2351e258699e815f4f2110807`, instrumented runtime test added temporarily to `packages/opencode/test/session/prompt.test.ts`.
+
+Date:
+2026-06-27
+
+Summary:
+Runtime validation of effective model *selection* (not propagation) for the fallback `currentModel(sessionID)` branch in `SessionPrompt.createUserMessage`.
+
+Executed command:
+```text
+$env:PATH = "$env:APPDATA\npm;$env:PATH"; & "$env:APPDATA\npm\bun.cmd" test test/session/prompt.test.ts -t "EXP-008 run 003: currentModel fallback applies"
+```
+
+Result:
+- Passed: `1 pass`, `58 filtered out`, `0 fail`, `5 expect() calls`.
+
+Observed sequence:
+1. `SessionPrompt.createUserMessage` received `input.model = undefined` and `agent.model = undefined`.
+2. `createUserMessage` selected the fallback model `{ providerID: "opencode", modelID: "big-pickle" }` (the environment's default model).
+3. This confirms that `currentModel(sessionID)` was called and its result used.
+4. Due to `noReply: true` in the test, the prompt loop stopped before `Provider.getModel`, `SessionProcessor`, and `LLM.stream` were invoked. Propagation through those stages was *not* observed for this branch.
+
+Related claims:
+- CLAIM-020
+
+Limitations:
+This run confirms only the selection logic in `createUserMessage` for the fallback case. Propagation through the downstream chain was not observed. It does not validate `agent.model`, subagents, provider-specific behavior, or native runtime selection. Temporary instrumentation and dependency-resolution workarounds were used in a throwaway checkout and reverted for tracked files after execution.
+
+EVID-022
+Type:
+test-blocker (blocked)
+
+Source:
+`EXP-008-run-002`, temporary checkout of anomalyco/opencode commit `ae53163cad0048b2351e258699e815f4f2110807`.
+
+Date:
+2026-06-27
+
+Summary:
+Runtime validation for the `agent.model` branch in the normal `SessionPrompt.prompt` path was blocked.
+
+Attempted command:
+```text
+$env:PATH = "$env:APPDATA\npm;$env:PATH"; & "$env:APPDATA\npm\bun.cmd" test test/session/prompt.test.ts -t "EXP-008 run 002: agent.model overrides currentModel"
+```
+
+Result:
+- Blocked.
+- The `prompt` function takes `agent: string` and internally calls `agents.get(agentName)`.
+- The test harness `noLLMServer` does not provide a simple override mechanism for `Agent.Service` to inject a custom model for the "build" agent.
+- Static code inspection of `packages/opencode/src/session/prompt.ts` line 646 confirms the precedence logic `const model = input.model ?? ag.model ?? (yield* currentModel(input.sessionID))`.
+- Therefore, while code inspection confirms `agent.model` takes precedence over `currentModel`, dynamic runtime execution could not be verified due to testing framework limitations.
+
+Related claims:
+- CLAIM-020
+
+Limitations:
+This is a blocked test. It relies on static code inspection to infer behavior. It does not provide runtime execution evidence for the `agent.model` branch. It does not validate subagents, provider-specific behavior, or native runtime selection.

@@ -180,3 +180,26 @@ Run records:
 Related claims:
 - CLAIM-017
 - CLAIM-019
+
+EXP-008
+Question:
+Does runtime execution confirm that `SessionPrompt.createUserMessage` stores the model that `SessionPrompt.runLoop`, `Provider.getModel`, and `LLM.stream` later use for the same prompt?
+
+Hypothesis:
+A minimal instrumented run with a test provider/model can observe the same `providerID/modelID` at user-message creation, assistant-message creation, processor input, and `LLM.stream` input, with no additional router changing the model between resolution and execution.
+
+State:
+completed
+
+Result:
+Partially confirmed. `EXP-008-run-001` confirms the explicit `input.model` branch. `EXP-008-run-003` confirms the `currentModel(sessionID)` fallback branch (selection logic confirmed, propagation logic inferred from run 001). `EXP-008-run-002` was blocked; the `agent.model` branch relies on static code inspection (EVID-019) confirming its precedence in the `??` chain.
+
+Run records:
+- EXP-008-run-001
+- EXP-008-run-002 (blocked)
+- EXP-008-run-003
+
+Related claims:
+- CLAIM-020
+- CLAIM-021
+- CLAIM-023

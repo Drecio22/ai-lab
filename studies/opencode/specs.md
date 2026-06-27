@@ -124,19 +124,29 @@ Open questions:
 
 ## Model selection
 
-State: empty
+State: draft
 
 Confirmed facts:
-- none yet
+- For the explicit `input.model` branch in the normal `SessionPrompt.prompt` path, the model selected by `SessionPrompt.createUserMessage` is the same model persisted on the user message, materialized by `Provider.getModel`, passed to `SessionProcessor.process`, received by `LLM.stream`, and sent to the final AI SDK runtime request. [EVID-020]
 
 Hypotheses:
-- pending investigation
+- For the full normal `SessionPrompt.prompt` path, `SessionPrompt.createUserMessage` is the component that decides the effective model reference for a prompt by applying `input.model ?? agent.model ?? currentModel(sessionID)`. Runtime evidence covers the `input.model` branch (full propagation) and the `currentModel` branch (selection only). The `agent.model` branch is confirmed by static code only. [CLAIM-020, EVID-019, EVID-020, EVID-021]
+- `SessionPrompt.runLoop` does not choose a new model; it materializes `lastUser.model` through `Provider.getModel`, creates the assistant message with that model, and passes it to `SessionProcessor.process`. [CLAIM-021, EVID-019, EVID-020]
+- `LLM.stream` executes the already resolved model through either the native runtime or AI SDK `streamText`; runtime adapter selection is separate from effective model selection. Runtime evidence currently covers AI SDK. [CLAIM-023, EVID-019, EVID-020]
+- In the inspected `TaskTool` subagent path, the child prompt receives `next.model` if defined, otherwise the parent assistant message's model. [CLAIM-022, EVID-019]
 
 Open questions:
 - Q-007
 - Q-008
 - Q-014
 - Q-016
+- Q-028
+
+Evidence:
+- EVID-019 (static trace)
+- EVID-020 (runtime: input.model branch, full propagation)
+- EVID-021 (runtime: currentModel branch, selection only)
+- EVID-022 (blocked: agent.model branch)
 
 ## Providers
 

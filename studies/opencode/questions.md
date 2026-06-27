@@ -285,3 +285,13 @@ answered
 
 Related to:
 runtime-ui-rendering, MessagePart, Markdown, DOM
+
+Q-028
+Question:
+Which component finally decides the effective LLM model that will execute a prompt?
+
+State:
+open
+
+Related to:
+model-selection, session, agents, subagents, providers, runtime

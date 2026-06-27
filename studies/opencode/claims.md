@@ -475,3 +475,96 @@ Experiments:
 
 Notes:
 Storybook provides manual rendering harnesses and app e2e tests cover timeline-level behavior, but no inspected test mounts the target components and asserts markdown DOM output directly.
+
+CLAIM-020
+Statement:
+For the normal `SessionPrompt.prompt` path, `SessionPrompt.createUserMessage` decides and persists the effective model reference for a user prompt by choosing `input.model ?? agent.model ?? currentModel(sessionID)`.
+
+State:
+supported
+
+Type:
+observed
+
+Confidence:
+medium
+
+Evidence:
+- EVID-019 (source code)
+- EVID-020 (run 001: explicit input.model confirmed)
+- EVID-021 (run 003: fallback currentModel confirmed)
+- EVID-022 (run 002: agent.model blocked, static code confirms precedence)
+
+Experiments:
+- EXP-008
+
+Notes:
+EVID-020 runtime-confirms the explicit `input.model` branch. EVID-021 runtime-confirms the fallback `currentModel(sessionID)` branch. The `agent.model` branch could not be dynamically confirmed due to testing blockages (EVID-022), but static code confirms its precedence in the `??` chain.
+
+CLAIM-021
+Statement:
+`SessionPrompt.runLoop` resolves the persisted user-message model reference into a concrete provider model via `Provider.getModel` before creating the assistant message and invoking `SessionProcessor.process`.
+
+State:
+confirmed
+
+Type:
+observed
+
+Confidence:
+high
+
+Evidence:
+- EVID-019 (static)
+- EVID-020 (runtime for explicit input.model branch)
+
+Experiments:
+- EXP-008
+
+Notes:
+Confirmed for the explicit `input.model` branch by EVID-020 (runtime observed: `runLoop.getModel`, `processor.process.input`, `llm.stream.input`, `TestLLMServer`). The `agent.model` and `currentModel` branches were not observed propagating through `runLoop`/`getModel`/`Processor`/`LLM.stream` in runtime. The mechanism itself (resolve persisted model via `getModel`) is confirmed for the observed branch.
+
+CLAIM-022
+Statement:
+Subagent execution through `TaskTool` chooses `next.model` when the target subagent defines one, otherwise inherits the parent assistant message's `providerID/modelID`, and then calls `SessionPrompt.prompt` for the child session with that model.
+
+State:
+supported
+
+Type:
+observed
+
+Confidence:
+medium
+
+Evidence:
+- EVID-019
+
+Experiments:
+- pending
+
+Notes:
+This covers the inspected `TaskTool` subagent path only. Other subtask construction paths may exist and should not be ruled out prematurely.
+
+CLAIM-023
+Statement:
+The final LLM execution point is `LLM.stream`: it obtains the provider language model through `Provider.getLanguage(input.model)` and either streams through the native runtime or calls AI SDK `streamText` with `wrapLanguageModel({ model: language, ... })`.
+
+State:
+confirmed
+
+Type:
+observed
+
+Confidence:
+high
+
+Evidence:
+- EVID-019
+- EVID-020
+
+Experiments:
+- EXP-008
+
+Notes:
+Confirmed for the AI SDK runtime path by EVID-020. `LLM.stream` executes the already resolved `Provider.Model`; it selects runtime adapter (`native` or `ai-sdk`) but did not choose a different effective model in the inspected explicit-model run.
