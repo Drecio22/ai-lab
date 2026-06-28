@@ -65,6 +65,77 @@ SessionPrompt.prompt
 
 ---
 
+## Extension Points (EVID-002, EVID-003)
+
+This section records the real extension surfaces found in OpenCode at commit `ae53163`. They determine which routing positions are reachable without a fork. Observed facts, inferences, and hypotheses are labeled.
+
+### Two coexisting plugin systems
+
+| System | Package | Status | Active in session execution? |
+|---|---|---|---|
+| V1 plugin | `@opencode-ai/plugin` (`packages/plugin/src/index.ts`) | Officially documented, published | **Yes** (hooks dispatched via `Plugin.Service.trigger`) |
+| V2 plugin | `@opencode-ai/plugin/v2/effect` (`packages/plugin/src/v2/effect/*`) | "Implementation plan, not documentation for the current API" (`PLAN.md:5`) | Host wired (`packages/core/src/plugin/host.ts`, `plugin.ts:140-153`), feeds catalog/agent/skill, but its runtime hooks are **not** on the live LLM path |
+| `@opencode-ai/llm` | `packages/llm` | Schema-first LLM core; `DESIGN.md` proposes replacing it with `@opencode-ai/ai` | Not on the active path analyzed in Study-001 |
+
+[observed: EVID-002 §A, §D, §E]
+
+### V1 hooks vs. routing intent
+
+| Hook | Fires at (V1) | Can it change the primary model? | Notes |
+|---|---|---|---|
+| `chat.message` | new user message | **No** — `model` is read-only input; output mutates message/parts | `packages/plugin/src/index.ts:234-243` |
+| `chat.params` | LLM request preparation (`llm/request.ts:114`) | **No** — `model` read-only input; output is generation params only | Decisive negative evidence for routing via this hook |
+| `chat.headers` | LLM request preparation (`llm/request.ts:134`) | No | Headers only |
+| `experimental.chat.system.transform` | LLM request preparation (`llm/request.ts:69`) | No | System prompt only |
+| `experimental.chat.messages.transform` | prompt loop (`prompt.ts:1254`) | No | Message list only |
+| `experimental.provider.small_model` | `Provider.getSmallModel` (`provider.ts:1858`) | **Only the small model** | Not the primary prompt model |
+| `provider` (ProviderHook `.models`) | provider assembly (`provider.ts:1367`) | No (catalog-level) | Defines which models a provider offers; static per load |
+| `tool.execute.before/after`, `tool.definition` | tool dispatch | No | Tool interception |
+| `experimental.session.compacting`, `experimental.compaction.autocontinue`, `experimental.text.complete` | compaction / completion | No | Auxiliary flows |
+
+[observed: EVID-002 §B, §C]
+
+**Inference**: No V1 hook exposes the primary model as a writable value before or at commitment. The model is resolved in `createUserMessage` (Study-001, CLAIM-020) and is thereafter read-only input to every downstream hook.
+
+### Provider registration and the model materialization layer
+
+Providers are assembled in `packages/opencode/src/provider/provider.ts` from four sources [observed: EVID-002 §C]:
+
+1. **Config** (`cfg.provider`, opencode.json) — static definitions, `source: "config"`. A custom OpenAI-compatible endpoint is configurable without code (`provider.ts:1395-1449`, default npm `@ai-sdk/openai-compatible`). [CLAIM-013]
+2. **Plugin `ProviderHook.models`** — returns a model catalog per provider (`provider.ts:1367-1392`). Catalog-level only; not per-prompt.
+3. **`models.dev` catalog** — built-in data, `source: "custom"` (`provider.ts:1239`).
+4. **V2 `catalog.transform`** — can `provider.update/remove`, `model.update/remove`, `model.default.set` (`packages/plugin/src/v2/effect/catalog.ts`). V2 only; domain-rebuild, not per-prompt.
+
+The dynamic point — `Provider.getLanguage` (`provider.ts:1801`) turning a `Model` into an AI SDK `LanguageModelV3` — uses the internal `resolveSDK` (`provider.ts:1639`) and `s.modelLoaders[model.providerID]` (`provider.ts:1811`). The `modelLoaders` map is populated **only** from the closed built-in `custom(dep)` registry (`provider.ts:168`, applied at `1535-1551`). The V1 `ProviderHook` exposes `models`, not `getModel`, so a V1 plugin cannot install a routing model loader. [CLAIM-012]
+
+`resolveSDK` also wraps the transport: a provider/model `fetch` option is wrapped in-place (`provider.ts:1703-1734`). This is an HTTP-level interception point, but because `fetch` is a function it requires code and behaves like Position 5 running in-process, not like a provider-abstraction interceptor.
+
+### V2 interception points (emerging)
+
+The V2 host exposes runtime hooks that ARE designed for provider-abstraction interception [observed: EVID-002 §D]:
+
+- `aisdk.sdk` — intercepts AI SDK creation; can set `event.sdk`. Used by `DynamicProviderPlugin` to load any `@ai-sdk/*` package on demand (`packages/core/src/plugin/provider/dynamic.ts`).
+- `aisdk.language` — intercepts `LanguageModelV3` creation; can set `event.language`. **This is the V2 equivalent of `Provider.getLanguage` and the natural home for Position 4.** [CLAIM-015, hypothesis]
+- `catalog.transform` — provider/model/default manipulation at the catalog layer.
+
+**Inference**: If V2 were the active execution path, Position 4 would be viable without a fork by returning a delegating `LanguageModelV3` from `aisdk.language`. Today the live path is V1 and does not reach these hooks (CLAIM-011).
+
+### Effect-TS composition
+
+OpenCode is built on Effect-TS (`Context.Service`, `Layer`, `Layer.provideMerge`, `Effect.fn`). The V2 host and all V2 domains are composed this way (`packages/core/src/plugin.ts:145-153`). This is a real dependency-injection/composition system, but it is an internal/V2 concern: the V1 active session path exposes extension through the `Hooks` trigger pattern, not through user-facing Effect layer replacement. [CLAIM-014]
+
+### Extension tiers
+
+| Tier | Examples | Routing utility |
+|---|---|---|
+| Officially supported/documented | V1 plugins (npm/local), documented hooks (`event`, `tool.execute.*`, `shell.env`, `experimental.session.compacting`, custom `tool`), config providers, agents, MCP | Static catalog (Position 2/3); tool/event interception (Position 7) |
+| Public type, undocumented | `chat.params`, `chat.headers`, `provider` ProviderHook, `experimental.provider.small_model`, `experimental.chat.*.transform`, `tool.definition`, `permission.ask`, `command.execute.before` | Auxiliary; small-model only; catalog-level |
+| Internal / not public API | V2 host + hooks (`aisdk.*`, `catalog.transform`), `modelLoaders`/`custom()`, `resolveSDK`, `BUNDLED_PROVIDERS` | Position 4 lives here; requires V2 activation or core mod |
+
+[observed: EVID-002, EVID-003; CLAIM-016]
+
+---
+
 ## Position 1: Client-Side Preprocessor
 
 ### Description
@@ -244,6 +315,15 @@ createUserMessage → { providerID: "router", modelID: "dynamic" }
 ### Impacto en mantenimiento
 - Medium: custom provider must track OpenCode's provider interface changes.
 - Medium: must handle provider-specific error modes, rate limits, and auth.
+
+### Veredicto actualizado (EVID-002, CLAIM-007, CLAIM-011, CLAIM-012, CLAIM-015)
+
+This position was the principal target of the Q-002 investigation. The refined verdict, split by generation:
+
+- **Active V1 path (today, commit `ae53163`): NOT viable without core modification.** The provider abstraction's only dynamic point (`Provider.getLanguage` via `modelLoaders`) is a closed built-in registry (`provider.ts:168`); the V1 plugin API exposes only `models`, not `getModel`. No V1 hook can redirect the primary model per-prompt (CLAIM-012). The sole code-reachable per-call interception on V1 is the `customFetch` wrapper in `resolveSDK` (`provider.ts:1703-1734`), which is HTTP-level interception (i.e. Position 5 in-process), not a provider-abstraction interceptor.
+- **V2 path: viable without fork, conditional on activation.** The V2 `aisdk.language` runtime hook can set `event.language` to a delegating `LanguageModelV3`, which is exactly Position 4 (CLAIM-015, hypothesis). But V2's runtime hooks are not reached by the live prompt path today (CLAIM-011, supported; residual runtime uncertainty in U-006).
+
+**Net**: Position 4 graduates from pure hypothesis to *conditionally viable*. Today it requires either (a) a core modification to open `modelLoaders`/add a V1 model-redirect hook, or (b) waiting for/migrating to the V2 execution path. It is not a no-fork option on the current active path.
 
 ---
 
@@ -438,3 +518,5 @@ For **dynamic, non-invasive routing**, Position 1 (client-side preprocessor) is 
 For **configuration-driven static routing**, Position 2 (agent config) is the most OpenCode-native approach.
 
 For **transparent, protocol-level routing** with potential full dynamic capability, Position 5 (external proxy) is the strongest candidate but carries significant protocol compatibility risk.
+
+**Updated insight after Q-002 (EVID-002/003)**: Position 4 (provider-level interceptor) is *conditionally viable* — not on the active V1 path without core modification (the `modelLoaders` registry is closed and no V1 hook can redirect the primary model; CLAIM-012), but viable on the V2 path via `aisdk.language` once V2 is the active execution path (CLAIM-015). Position 6 (LLM execution wrapper) remains high-invasiveness: the only code-reachable per-call interception on V1 is `resolveSDK`'s `customFetch` wrapper (HTTP-level, i.e. Position 5 in-process), not a stable public hook.

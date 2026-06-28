@@ -9,26 +9,33 @@ The strongest candidates are:
 2. **Agent config routing** (Position 2) — most OpenCode-native for static routing
 3. **External HTTP proxy** (Position 5) — most transparent for dynamic routing
 
-## Proposal: Resolve the Extension Points and Provider Architecture
+The Q-002 iteration (EVID-002/EVID-003) resolved U-001, U-002, U-004, with runtime confirmation from EVID-004 resolving U-006. Position 4 is now confirmed **not viable on the active V1 path** without core modification (CLAIM-012 ⇒ confirmed). V2 `aisdk.language` is confirmed functional (standalone test) but unreachable during live prompts. The next open question shifts to protocol transparency (U-007) for Position 4 on V2, and to the remaining positions (1, 2, 5) for near-term feasibility.
 
-Before designing or implementing any router, the following uncertainties must be resolved because they affect which positions are viable:
+## Recommended next investigation
 
-### Priority 1: Investigate OpenCode's Extension Point Architecture (U-001, U-002, U-004)
+### Priority 1: Protocol transparency for delegating LanguageModelV3 (U-007)
 
-**Why**: Without knowing whether OpenCode has service-layer interception, custom provider registration, or middleware support, we cannot evaluate Position 4's true viability. This is the cheapest investigation that could open a new low-invasiveness routing position.
+**Why**: With U-006 resolved, Position 4 is viable on V2 but blocked from active use. The next question is whether it COULD work once V2 becomes active — which depends on whether a delegating `LanguageModelV3` preserves streaming, tool-call, and usage semantics.
 
-**Approach**:
-- Inspect OpenCode's Effect-TS `Layer`/`Service` architecture.
-- Find how providers are registered and wired.
-- Determine if a custom provider can be added via configuration alone.
-- Look for any existing middleware, plugin, or hook system.
-- Check the OpenCode documentation and issues for "extension", "plugin", "middleware", "hook" mentions.
+**Approach**: Build a V2 plugin that returns a delegating `LanguageModelV3` and test with real prompts (on a throwaway V2-enabled branch or after V2 migration). Document which semantics survive and which break.
 
-**Expected output**: Updated knowledge about extension points; clear evaluation of Position 4 feasibility.
+**Status**: PENDING — blocked on V2 activation for live prompts.
+
+### Priority 2: Client-side preprocessor (Position 1) feasibility
+
+**Why**: Position 1 remains the strongest candidate (low invasiveness + high expressiveness). Now that we have confidence about Position 4 being blocked, effort should shift to validating Position 1 across clients.
+
+**Approach**: Map all client prompt entry points (addresses U-005). Determine if a shared pre-SDK-hook interception exists.
+
+### Priority 3: HTTP protocol trace (Position 5 / U-003)
+
+**Why**: The external proxy approach remains the most transparent option. Protocol trace determines whether it requires provider-specific handling or can work generically.
+
+**Approach**: Capture actual HTTP requests OpenCode sends to different providers. Document format, streaming, and tool-call serialization differences.
 
 ### Priority 2: Trace OpenCode's Provider HTTP Protocol (U-003)
 
-**Why**: Without knowing the exact HTTP request/response shapes OpenCode uses with each provider, we cannot evaluate Position 5 (external proxy) feasibility. This is needed before any proxy implementation.
+**Why**: Without knowing the exact HTTP request/response shapes OpenCode uses with each provider, we cannot evaluate Position 5 (external proxy) feasibility. This is needed before any proxy implementation. The same protocol-translation problem applies to Position 4 on V2 (U-007).
 
 **Approach**:
 - Capture actual HTTP requests OpenCode sends to different providers.
@@ -51,17 +58,9 @@ Before designing or implementing any router, the following uncertainties must be
 
 ## Recommended Sequence
 
-1. **First**: Resolve U-001, U-002, U-004 (extension points + provider architecture).
-   - Pure source inspection; no experiments, no proxy, no product investigation.
-   - Could open Position 4 as a viable low-invasiveness option.
-
-2. **Second**: Resolve U-003 (HTTP protocol compatibility).
-   - May require a lightweight trace experiment (capture real OpenCode provider traffic).
-   - Evaluates Position 5 feasibility.
-
-3. **Third**: Resolve U-005 (client entry points).
-   - Source inspection across client repositories.
-   - Evaluates Position 1 universality.
+1. **First**: Priority 0 (runtime path tracer, U-006) — settles Position 4 for the current commit; pure runtime observation, minimal effort.
+2. **Second**: Priority 2 (HTTP protocol compatibility, U-003) — may require a lightweight trace experiment; evaluates Position 5 and informs U-007.
+3. **Third**: Priority 3 (client entry points, U-005) — source inspection across client repositories; evaluates Position 1 universality.
 
 **After all three**: converge on the recommended routing position and begin implementation-phase investigation (concrete tools, design, prototyping).
 

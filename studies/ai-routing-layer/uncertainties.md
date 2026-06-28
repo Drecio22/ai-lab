@@ -11,10 +11,10 @@ Whether OpenCode has any existing middleware, plugin, service-layer interceptor,
 If such mechanisms exist, Position 4 (provider-level interceptor) could become low-invasiveness instead of medium. Position 6 (LLM execution wrapper) could become feasible without a fork.
 
 **Current status**:
-Study-001 registered Q-020 about extension points but did not investigate. No evidence available.
+RESOLVED (this iteration). OpenCode has a formal, documented V1 plugin system with ~20 named hooks (CLAIM-009), and a second Effect-based V2 system with transform + runtime hooks including `aisdk.language` (CLAIM-010). Extension surfaces are classified into three tiers (CLAIM-016). The sharper open question is now U-006.
 
 **What could resolve it**:
-Source inspection of OpenCode's Effect-TS service layer, provider registration mechanism, and any documented plugin/middleware APIs.
+Done. See specs.md "Extension Points".
 
 ---
 
@@ -27,10 +27,10 @@ Whether OpenCode allows registering custom providers through configuration alone
 Position 4 (provider-level interceptor) depends on this. If configuration-only registration is possible, invasiveness drops from medium to low.
 
 **Current status**:
-Unknown. Study-001 inspected `Provider.getModel` and `Provider.getLanguage` behavior but not provider registration mechanisms.
+RESOLVED (this iteration). Configuration-only providers ARE supported for static OpenAI-compatible catalogs (CLAIM-013). But configuration cannot carry routing logic (functions); a static config provider is Position 3 behavior, not Position 4. Dynamic per-call routing requires code. The V1 plugin API exposes only `ProviderHook.models` (catalog), not `getModel`/modelLoader, so a V1 plugin cannot install a routing provider (CLAIM-012).
 
 **What could resolve it**:
-Source inspection of provider loading, registration, and configuration schemas.
+Done for V1. The V2 equivalent (`catalog.transform` + `aisdk.language`) is tracked in U-006/U-007.
 
 ---
 
@@ -63,10 +63,10 @@ Whether OpenCode's use of Effect-TS provides natural interception points (e.g., 
 Effect-TS's `Layer` system is designed for dependency injection and service replacement. If OpenCode registers providers as Effect-TS services, replacing a provider service with a routing-aware wrapper may be possible through configuration alone.
 
 **Current status**:
-Unknown. Study-001 noted OpenCode uses Effect-TS but did not investigate its service architecture for extensibility.
+PARTIALLY RESOLVED (this iteration). OpenCode is built on Effect-TS and composes services via `Layer`/`Context.Service`/`Layer.provideMerge` (CLAIM-014). The V2 host is entirely Effect services and DOES expose service-level interception through `aisdk.language`/`aisdk.sdk` (CLAIM-010). However, this is an internal/V2 surface, not a documented public extension point, and it is not reached by the active V1 execution path (CLAIM-011). So Effect-TS provides composition points, but they are not a usable public routing hook today.
 
 **What could resolve it**:
-Inspect OpenCode's Effect-TS service layer, specifically how providers are registered, how `Provider.getModel` and `Provider.getLanguage` are wired through the Effect runtime.
+Resolve U-006 (does V2 execute live prompts?). If yes, the V2 Effect hooks become the practical interception surface.
 
 ---
 
@@ -83,3 +83,35 @@ Unknown. Different OpenCode clients may call `promptAsync` (v1) or `session.prom
 
 **What could resolve it**:
 Map the prompt submission entry points for each client. Determine if there is a common SDK layer that all clients use.
+
+---
+
+### U-006: Which execution path is truly active at runtime (V1 vs V2)
+
+**What is unknown**:
+At commit `ae53163`, with the V2 host wired and consumed for catalog/agent/skill, does a live prompt still execute entirely on the V1 path (`SessionPrompt.prompt` → `LLM.stream` → AI SDK `streamText`, V1 events), or does any segment — specifically `Provider.getLanguage` / language-model creation — route through the V2 `AISDK` service and therefore through the `aisdk.language`/`aisdk.sdk` hooks?
+
+**Why it matters**:
+This is the single decisive question for Position 4 viability today. Static evidence says V1 is active and does NOT call V2 hooks (CLAIM-011, supported). If a runtime tracer confirms that, Position 4 is definitively not reachable on the current path without core mod or V2 migration. If the tracer shows V2 hooks firing, Position 4 becomes immediately testable.
+
+**Current status**:
+RESOLVED. EVID-004 executed a runtime tracer experiment: dual V1+V2 plugin registered; V1 `chat.params`/`chat.message` FIRED during prompt; V2 `aisdk.sdk`/`aisdk.language` did NOT fire; only `catalog.transform` fired (during initialization). Standalone dispatch tests confirmed both V1 and V2 dispatch mechanisms are functional individually. The V1 path is the exclusive execution path for live prompts at this commit.
+
+**What could resolve it**:
+Done. See EVID-004 and CLAIM-011 (now confirmed).
+
+---
+
+### U-007: Delegating LanguageModelV3 semantics (V2 Position 4)
+
+**What is unknown**:
+If a V2 `aisdk.language` hook returns a `LanguageModelV3` that delegates to a different backend provider, whether OpenCode's expectations survive: SSE streaming event shape, tool-call serialization, usage/cost accounting, error model, and the V1-facing `LLMEvent` normalization (Study-001 EVID-020).
+
+**Why it matters**:
+Position 4 on V2 is only useful if the delegating language model is transparent to OpenCode. If protocol translation is required, Position 4 collapses into the same complexity as Position 5 (external proxy).
+
+**Current status**:
+Unknown. Not exercised. Related to U-003 (proxy protocol compatibility) — the same provider-quirk translation problem applies.
+
+**What could resolve it**:
+A V2 plugin prototype that returns a delegating `LanguageModelV3` (e.g. an OpenAI-compatible backend behind an Anthropic-declared model) and a runtime check of streaming, tool calls, and usage.

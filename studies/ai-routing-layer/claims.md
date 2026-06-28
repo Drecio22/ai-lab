@@ -116,7 +116,7 @@ Statement:
 Whether OpenCode provides a built-in plugin or middleware system suitable for routing hooks remains unknown.
 
 State:
-unknown
+deprecated
 
 Type:
 hypothesis
@@ -129,26 +129,188 @@ Evidence:
 - OpenCode Study-001, specs.md "Extension points" section (empty)
 
 Notes:
-Study-001 identified Q-020 about extension points but did not investigate it. The absence of documented extension points does not prove they don't exist. Resolving this is critical for evaluating Position 4 (provider-level interceptor) and Position 6 (LLM execution wrapper) viability.
+Superseded by CLAIM-009..CLAIM-016 after EVID-002/EVID-003. OpenCode DOES have formal plugin and hook systems (V1 active, V2 emerging). The updated, sharper question is whether any of those hooks can redirect the PRIMARY model per-prompt — see CLAIM-012.
 
 CLAIM-007
 Statement:
 A custom OpenCode provider implementation can act as a routing layer by intercepting `getModel`/`getLanguage` calls and delegating to different backend providers based on request context.
 
 State:
-hypothesis
+contradictory
 
 Type:
 hypothesis
 
 Confidence:
-none
+medium
 
 Evidence:
 - OpenCode Study-001, EVID-019 (Provider.getModel and Provider.getLanguage are the model materialization layer)
+- OpenCode Study-002, EVID-002 (modelLoaders registry is closed built-in; V1 plugin API exposes only `models`, not `getModel`; V2 `aisdk.language` can intercept language-model creation but is not on the active path)
 
 Notes:
-OpenCode's provider abstraction may be a natural interception point. The degree of invasiveness depends on whether custom providers can be registered through configuration alone.
+The claim is true in principle but split by generation:
+- On the ACTIVE V1 path: NOT achievable without core modification. The dynamic interception point (`modelLoaders`/`getLanguage`) is a closed built-in registry (`provider.ts:168`, `1535-1551`), and the V1 `ProviderHook` exposes only `models`, not `getModel`. So a V1 plugin cannot install a routing model loader. See CLAIM-012.
+- On the V2 path: achievable in principle via the `aisdk.language` runtime hook returning a delegating `LanguageModelV3`. See CLAIM-015.
+Marked contradictory because the same statement is refuted for V1 and supported (not yet confirmed at runtime) for V2.
+
+CLAIM-009
+Statement:
+OpenCode has a formal, officially supported plugin system (V1) that loads plugins from configuration (the `plugin` array in `opencode.json` and the `.opencode/plugins/` / `~/.config/opencode/plugins/` directories) and dispatches a defined set of named hooks sequentially via `Plugin.Service.trigger`.
+
+State:
+confirmed
+
+Type:
+observed
+
+Confidence:
+high
+
+Evidence:
+- EVID-002 (V1 plugin contract `packages/plugin/src/index.ts:222-335`; loader `packages/opencode/src/plugin/loader.ts`; orchestration `packages/opencode/src/plugin/index.ts:177-238`; trigger `index.ts:280-293`)
+- EVID-003 (official plugins documentation confirms loading sources, npm install, and `@opencode-ai/plugin` types)
+
+Notes:
+This resolves the "does a plugin system exist" half of U-001. It does not by itself imply routing capability (see CLAIM-012).
+
+CLAIM-010
+Statement:
+OpenCode has a second, Effect-based plugin system (V2) with replayable domain `transform` hooks (agent, catalog, command, integration, reference, skill) and runtime hooks (`aisdk.sdk`, `aisdk.language`); its host is implemented and wired into the app via `locationLayer`, but its own plan document states it is a migration target rather than the current public API.
+
+State:
+confirmed
+
+Type:
+observed
+
+Confidence:
+high
+
+Evidence:
+- EVID-002 (`packages/plugin/src/v2/effect/*`; `PluginHost.make` at `packages/core/src/plugin/host.ts:20-219`; composed at `packages/core/src/plugin.ts:140-153`; provider plugins registered at `packages/core/src/plugin/internal.ts:105-118`; "implementation plan, not documentation for the current API" at `packages/plugin/src/v2/effect/PLAN.md:5`; referenced from app at `packages/opencode/src/agent/agent.ts:33,104` and `packages/opencode/src/skill/index.ts:9`)
+
+Notes:
+V2 is real and wired, but it is an emerging API. Whether its runtime hooks fire during a live prompt is a separate question (CLAIM-011).
+
+CLAIM-011
+Statement:
+On the active V1 execution path at commit `ae53163`, the V2 runtime hooks (`aisdk.language`, `aisdk.sdk`) are NOT reached: `Provider.getLanguage` resolves the language model through the internal `resolveSDK` + `modelLoaders` path, which does not call into the V2 `AISDK` service.
+
+State:
+confirmed
+
+Type:
+observed
+
+Confidence:
+high
+
+Evidence:
+- EVID-002 (`Provider.getLanguage` at `provider.ts:1801-1830`; `resolveSDK` at `provider.ts:1639-1745`; `modelLoaders` populated only from `custom(dep)` at `provider.ts:168` and `1535-1551`; none reference the V2 AISDK service)
+- OpenCode Study-001, EVID-013..EVID-015 and EXP-006/EXP-008 (runtime confirmation that the live prompt path is V1 and V1 events are active)
+- EVID-004 (runtime tracer experiment: V1 plugin loaded, V1 `chat.params`/`chat.message` fired; V2 `aisdk.sdk`/`aisdk.language` registered but DID NOT fire during live prompt; only V2 `catalog.transform` fired during initialization)
+
+Notes:
+Runtime evidence confirms static analysis. U-006 is resolved. V2 hooks are registered with the AISDK service but never invoked because `AISDK.runSDK`/`AISDK.runLanguage` are only called from `AISDK.language()`, which is not reached by the V1 `Provider.getLanguage` path.
+
+CLAIM-012
+Statement:
+No V1 plugin hook can redirect the primary (prompt) model per-prompt. `chat.params` and `chat.message` expose `model` as read-only input; `experimental.provider.small_model` only selects the small model; and the dynamic model-loader registry used by `Provider.getLanguage` is a closed built-in map not exposed to plugins.
+
+State:
+confirmed
+
+Type:
+observed
+
+Confidence:
+high
+
+Evidence:
+- EVID-002 (`chat.params` input/output shape at `packages/opencode/src/session/llm/request.ts:114-132`; `experimental.provider.small_model` scope at `provider.ts:1858-1869`; closed `modelLoaders` registry at `provider.ts:168` and `1535-1551`; `ProviderHook` exposes only `models` at `packages/plugin/src/index.ts:214-217`)
+
+Notes:
+This is the decisive negative result for Position 4 on the V1 path. Per-prompt primary-model routing on V1 requires either core modification (open `modelLoaders` to plugins, or add a model-redirect hook), or falling back to HTTP-level interception via `customFetch` (which is effectively Position 5 in-process).
+
+CLAIM-013
+Statement:
+A custom OpenAI-compatible provider can be added through configuration alone (the `provider` section of `opencode.json`, defaulting its npm package to `@ai-sdk/openai-compatible`), with no code; but such a provider is a static model catalog with no per-request routing logic.
+
+State:
+confirmed
+
+Type:
+observed
+
+Confidence:
+high
+
+Evidence:
+- EVID-002 (config providers iterated at `provider.ts:1357` and `1395-1449`; default npm at `provider.ts:1197` and `1414`; `source: "config"`)
+- EVID-003 (official Providers documentation confirms configuration as a supported feature)
+
+Notes:
+This refines CLAIM-004 and answers Q5: configuration-only providers are supported, but they provide static mapping, not dynamic routing. Dynamic routing logic requires code (a plugin) or an external/in-process proxy.
+
+CLAIM-014
+Statement:
+OpenCode is built on Effect-TS services (`Context.Service`, `Layer`, `Layer.provideMerge`, `Effect.fn`), and this is the internal composition mechanism for the V2 plugin host and all V2 domains; however, the V1 active session path exposes extension through the `Hooks` trigger pattern, not through user-facing service replacement.
+
+State:
+confirmed
+
+Type:
+observed
+
+Confidence:
+high
+
+Evidence:
+- EVID-002 (`PluginHost.make` built entirely on Effect services at `packages/core/src/plugin/host.ts:20-219`; `locationLayer` composition at `packages/core/src/plugin.ts:145-153`; V1 `Plugin.Service` as `Context.Service` at `packages/opencode/src/plugin/index.ts:58`)
+
+Notes:
+Effect-TS does offer composition points, but they are primarily an internal/V2 concern. A user today extends via V1 hooks, not by replacing Effect layers. This partially answers U-004: Effect Layers exist, but they are not a documented public extension surface for routing.
+
+CLAIM-015
+Statement:
+On the V2 path, the `aisdk.language` runtime hook is a genuine provider-abstraction interception point: a plugin can set `event.language` to a `LanguageModelV3` that delegates to a different backend, enabling per-call model routing without modifying core. This makes Position 4 technically viable without a fork — conditional on V2 becoming the active execution path.
+
+State:
+supported
+
+Type:
+observed
+
+Confidence:
+medium
+
+Evidence:
+- EVID-002 (V2 `aisdk.language` hook shape at `packages/plugin/src/v2/effect/aisdk.ts`; host wiring at `packages/core/src/plugin/host.ts:58-71`; `DynamicProviderPlugin` demonstrates on-demand SDK loading via `aisdk.sdk` at `packages/core/src/plugin/provider/dynamic.ts`)
+- EVID-004 (standalone dispatch test proved `runLanguage(...)` fires the V2 hook and the returned `LanguageModelV3` is intercepted by the caller)
+
+Notes:
+Standalone dispatch test (EVID-004) confirms the interception chain works when invoked. The remaining open condition is U-007: protocol transparency — whether a delegating `LanguageModelV3` preserves streaming, tool-call, and usage semantics. V2 activation per-prompt is separately blocked by U-006 (now resolved: V2 path not active).
+
+CLAIM-016
+Statement:
+OpenCode extension surfaces divide into three tiers: (a) officially supported/documented (V1 plugins via npm/local files; documented hooks; config providers; agents; MCP); (b) present in the public `@opencode-ai/plugin` type but undocumented and without stability guarantees (`chat.params`, `provider` ProviderHook, `experimental.provider.small_model`, the `experimental.chat.*` transforms, `tool.definition`, etc.); and (c) internal/not public API (V2 host and hooks, `modelLoaders`/`custom()` registry, `resolveSDK`, `BUNDLED_PROVIDERS`).
+
+State:
+confirmed
+
+Type:
+observed
+
+Confidence:
+high
+
+Evidence:
+- EVID-002 (type vs. invocation sites vs. internal registries)
+- EVID-003 (official docs document only a subset of V1 hooks and omit all V2 hooks)
+
+Notes:
+This answers Q8. Tier (b) is usable today but carries migration risk; tier (c) requires either waiting for V2 to stabilize or modifying core.
 
 CLAIM-008
 Statement:
