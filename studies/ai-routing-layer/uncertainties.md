@@ -115,3 +115,19 @@ Unknown. Not exercised. Related to U-003 (proxy protocol compatibility) — the 
 
 **What could resolve it**:
 A V2 plugin prototype that returns a delegating `LanguageModelV3` (e.g. an OpenAI-compatible backend behind an Anthropic-declared model) and a runtime check of streaming, tool calls, and usage.
+
+---
+
+### U-008: Public catalog access for a Decision Engine
+
+**What is unknown**:
+Which stable/public boundary should a future Decision Engine use to read the complete effective model catalog without coupling to internal OpenCode services: V1 instance HTTP provider endpoint, V2 server `model.list`, SDK client, a new plugin hook, or a new first-class catalog service API.
+
+**Why it matters**:
+Q-003 confirms OpenCode already constructs a rich internal catalog. But reuse differs by deployment shape. An in-process core feature can call `Provider.Service.list()` or V2 `Catalog.Service.model.available()` directly; a V1 plugin or external router cannot rely on undocumented internal Effect services without migration risk.
+
+**Current status**:
+Partially resolved. Static inspection confirms the internal catalog exists and identifies candidate accessors (EVID-005, CLAIM-022). The officially documented plugin context does not expose the complete active catalog directly. No runtime/API compatibility test was run in this iteration.
+
+**What could resolve it**:
+Inspect generated SDK routes and server API schemas for provider/model endpoints, then run a non-mutating API call against a live instance to verify which endpoint returns the effective active catalog needed by a Decision Engine.

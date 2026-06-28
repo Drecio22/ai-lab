@@ -330,3 +330,122 @@ Evidence:
 
 Notes:
 MCP servers in OpenCode extend tool/context capabilities, not model selection. This is an intuitive assessment, not evidence-backed.
+
+CLAIM-017
+Statement:
+The active OpenCode/V1 model catalog is built by `Provider.Service` from a models.dev-derived database plus config providers, V1 provider plugin hooks, environment credentials, stored auth, built-in provider customizers, discovery loaders, and final provider/model filters.
+
+State:
+confirmed
+
+Type:
+observed
+
+Confidence:
+high
+
+Evidence:
+- EVID-005 (V1 construction sequence in `packages/opencode/src/provider/provider.ts:1302-1634`)
+- EVID-006 (official docs state Models.dev + AI SDK, provider config, credentials, `/models`, and provider/model filters)
+
+Notes:
+This answers Q-003 items 1, 2, 3, 6, 7, and 9 for the active path. The effective runtime catalog is not simply the raw models.dev data; it is filtered and personalized by config/auth/env/plugins/runtime flags.
+
+CLAIM-018
+Statement:
+On the active V1 path, the canonical effective model inventory is provider-indexed (`Record<ProviderID, Provider.Info>` with nested `models: Record<ModelID, Model>`), not a first-class flattened `AvailableModel[]`; flattened model option lists are derived for ACP/model-picker consumers.
+
+State:
+confirmed
+
+Type:
+observed
+
+Confidence:
+high
+
+Evidence:
+- EVID-005 (`Provider.Service.list()` returns `Record<ProviderID, Info>` at `provider.ts:1129-1140` and `1637`; ACP derives flattened `modelOptions` at `acp/directory.ts:60-103`)
+
+Notes:
+This answers Q-003 item 4 for V1. A Decision Engine can flatten the provider-indexed catalog itself, but OpenCode's V1 canonical service boundary is provider-indexed.
+
+CLAIM-019
+Statement:
+OpenCode model records carry enough metadata for capability-aware routing: provider/model IDs, display name, API/materialization ID and package, capabilities/modalities, tool/reasoning/temperature/attachment/interleaving flags, context/input/output limits, cost including cache and tier variants, status, family, release date, headers/options, and variants.
+
+State:
+confirmed
+
+Type:
+observed
+
+Confidence:
+high
+
+Evidence:
+- EVID-005 (V1 `Model` schema at `provider.ts:1018-1033`; raw models.dev schema at `models-dev.ts:47-98`; V2 `ModelV2.Info` schema at `schema/src/model.ts:59-87`)
+- EVID-006 (official docs expose provider/model IDs, model config, variants, custom providers, filters)
+
+Notes:
+This answers Q-003 item 5. The catalog is suitable for a Decision Engine's static capability/cost checks, but not sufficient by itself for live latency, quota, health, or benchmark-based decisions.
+
+CLAIM-020
+Statement:
+OpenCode has an internal V2 catalog service that does expose flattened available models (`catalog.model.available(): ModelV2.Info[]`), but that service belongs to the V2/server-next path and is not the active V1 prompt catalog confirmed by U-006.
+
+State:
+confirmed
+
+Type:
+observed
+
+Confidence:
+high
+
+Evidence:
+- EVID-005 (`Catalog.Service` interface and `model.available()` at `packages/core/src/catalog.ts:47-60`, `200-213`; server handlers at `packages/server/src/handlers/model.ts:12-13`; V2 runner at `packages/core/src/session/runner/model.ts:185-197`)
+- EVID-004 (V2 runtime hooks are not on live V1 prompt path)
+
+Notes:
+This answers Q-003 items 4, 8, and 10 for V2. `Catalog.Service` is the cleanest shape for a future Decision Engine after V2 activation, but using it today would not automatically match V1 prompt execution.
+
+CLAIM-021
+Statement:
+The effective catalog is semi-dynamic: models.dev is cached and periodically refreshable, while `Provider.Service` computes an instance-local effective provider catalog at service initialization/reload boundaries; it is not recomputed per prompt.
+
+State:
+confirmed
+
+Type:
+observed
+
+Confidence:
+high
+
+Evidence:
+- EVID-005 (`ModelsDev.get()` cached indefinitely until refresh; cache TTL/fetch behavior at `models-dev.ts:138-235`; `Provider.Service` builds `InstanceState` once at `provider.ts:1313-1634`)
+- EVID-006 (docs describe startup availability, `/connect`, config, model loading priority)
+
+Notes:
+This answers Q-003 item 9. The raw upstream database can refresh, but the active decision surface is a service-state snapshot, not a per-request discovery process.
+
+CLAIM-022
+Statement:
+A future in-process Decision Engine could reuse OpenCode's internal catalog infrastructure, but a V1 plugin cannot directly and officially reuse the complete active catalog through the documented plugin API; external/direct reuse requires either an OpenCode client/server endpoint or a new exposed service/hook.
+
+State:
+supported
+
+Type:
+inference
+
+Confidence:
+medium
+
+Evidence:
+- EVID-005 (`Provider.Service.list()` is an internal Effect service; documented plugin context does not expose it; HTTP handlers expose provider/model lists with path-specific shapes)
+- EVID-003/EVID-006 (official plugin docs expose plugin hooks/client context but do not document a complete provider catalog hook/API)
+
+Notes:
+This answers Q-003 item 11. The answer depends on where the Decision Engine runs: inside core can reuse `Provider.Service`/`Catalog.Service`; outside core can consume server/client APIs if available; ordinary V1 plugin code has no documented direct catalog service injection.

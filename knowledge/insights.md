@@ -80,3 +80,14 @@ provisional
 
 Origin:
 Study-002: AI Routing Layer (Position 4 split verdict; CLAIM-011, CLAIM-015, U-006)
+
+## INSIGHT-008
+
+Observation:
+A product can have a rich internal inventory service without exposing a reusable public catalog boundary. For routing systems, "the catalog exists" and "a Decision Engine can safely consume the catalog" are separate questions. The first is about internal data construction; the second is about API stability, process boundary, and whether the exposed shape matches the active execution path.
+
+State:
+provisional
+
+Origin:
+Study-002: AI Routing Layer (Q-003; OpenCode has V1 `Provider.Service.list()` and V2 `Catalog.Service.model.available()`, but documented V1 plugins do not directly expose the complete active catalog; CLAIM-018, CLAIM-020, CLAIM-022)

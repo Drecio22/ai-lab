@@ -45,6 +45,26 @@ Answer summary (supported by EVID-002, EVID-003; details in specs.md "Extension 
 
 ---
 
+Q-003
+Question:
+How does OpenCode build the effective catalog of LLM models available to the user? Specifically: where does the catalog originate, how are providers registered, how are model lists merged and filtered, who consumes the resulting structure, and can a future Decision Engine reuse it?
+
+State:
+answered (static inspection only)
+
+Related to:
+model-catalog, provider-registration, model-selection, decision-engine, models.dev, V1-provider-service, V2-catalog-service
+
+Answer summary (supported by EVID-005/EVID-006; details in specs.md "Model Catalog Construction"):
+
+- The current active/V1 catalog is built by `Provider.Service` in `packages/opencode/src/provider/provider.ts` from `ModelsDev.Service`, config providers, plugin provider hooks, environment variables, stored auth, built-in provider customizers, and provider/model filters.
+- The effective V1 catalog shape is not `AvailableModel[]`; it is `Record<ProviderID, Provider.Info>`, where each provider owns `models: Record<ModelID, Model>`. Flattened arrays are derived for ACP/model selectors, but the canonical V1 service returns provider-indexed data.
+- The V2 catalog is a separate Effect service (`Catalog.Service`) with `provider.available()` and `model.available()` APIs returning flattened `ModelV2.Info[]`; it is used by the V2/server-next path, not by the active V1 prompt path confirmed in U-006.
+- Model entries contain provider/model IDs, display name, provider API/materialization info, capabilities, modalities, variants, limits, pricing, status, family, release date, headers and options (V1); V2 normalizes similar information into schema-level `ModelV2.Info`.
+- A future Decision Engine can reuse OpenCode's internal catalog infrastructure if it runs inside the same process/service graph. External plugins today do not have a documented public hook/API that directly exposes the complete active V1 catalog; they would need an API/client call or a core-supported service boundary.
+
+---
+
 ## Derivation from Study-001
 
 Study-001 confirmed that OpenCode's effective model resolution occurs in `SessionPrompt.createUserMessage` via:

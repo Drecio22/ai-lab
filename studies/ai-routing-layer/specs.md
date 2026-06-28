@@ -136,6 +136,245 @@ OpenCode is built on Effect-TS (`Context.Service`, `Layer`, `Layer.provideMerge`
 
 ---
 
+## Model Catalog Construction (EVID-005, EVID-006)
+
+This section answers Q-003: how OpenCode builds the effective LLM model catalog available to the user, and whether a future Decision Engine can reuse it.
+
+### Call Diagram
+
+```text
+ModelsDev.Service.get()
+  ├─ load OPENCODE_MODELS_PATH/cache file
+  ├─ else load embedded OPENCODE_MODELS_DEV snapshot
+  └─ else fetch https://models.dev/api.json
+       ↓
+Provider.Service InstanceState initialization (V1 active path)
+  ├─ catalog = mapValues(modelsDev, fromModelsDevProvider)
+  ├─ database = public copy of catalog
+  ├─ load plugins before config hook-sensitive provider read
+  ├─ apply V1 plugin provider.models hooks to database provider models
+  ├─ extend database from cfg.provider custom providers/models
+  ├─ load env-backed providers into active providers
+  ├─ load auth.json API-backed providers into active providers
+  ├─ run plugin auth loaders
+  ├─ run built-in custom(provider) customizers/autoload/model loaders
+  ├─ re-apply config provider metadata/options
+  ├─ append discovered provider models where a discovery loader exists
+  └─ final filter pass: enabled/disabled providers, invalid aliases,
+     alpha/deprecated status, whitelist/blacklist, variants, empty providers
+       ↓
+Provider.Service.list() -> Record<ProviderID, Provider.Info>
+Provider.Service.getModel(providerID, modelID) -> Provider.Model
+Provider.Service.defaultModel() -> { providerID, modelID }
+       ↓
+Consumers: /models picker, ACP directory, config option UI, SessionPrompt,
+agents, compaction, tools, sharing, provider HTTP API
+```
+
+V2 has a parallel structure:
+
+```text
+V2 provider/catalog plugins + catalog.transform
+       ↓
+Catalog.Service state: Map<ProviderID, { provider, models: Map<ModelID, ModelV2.Info> }>
+       ↓
+catalog.provider.available() -> ProviderV2.Info[]
+catalog.model.available() -> ModelV2.Info[]
+       ↓
+packages/server handlers and V2 runner model selection
+```
+
+[observed: EVID-005]
+
+### Where the catalog is born
+
+Observed:
+
+- The raw provider/model database originates in `ModelsDev.Service`, backed by `https://models.dev/api.json`, a local cache file, an optional `OPENCODE_MODELS_PATH`, or an embedded `OPENCODE_MODELS_DEV` snapshot.
+- `Provider.Service` transforms the raw database into the active V1 provider catalog using `fromModelsDevProvider` and `fromModelsDevModel`.
+- V2 `Catalog.Service` is a separate stateful catalog with provider/model maps and transform support.
+
+Inference:
+
+- For the current active execution path, the catalog "birth" relevant to prompts is not the V2 `Catalog.Service`; it is the V1 `Provider.Service` state initialized from `ModelsDev.Service` plus local config/auth/plugin overlays.
+
+### Provider registration
+
+Observed V1 registration sources:
+
+| Source | Mechanism | Effect |
+|---|---|---|
+| models.dev | `fromModelsDevProvider` | Creates baseline provider/model database. |
+| Config | `cfg.provider` | Adds custom providers, overrides existing providers/models, sets `npm`, API URL, env, options, model fields, whitelist/blacklist. |
+| V1 plugin provider hook | `hook.provider.models` | Replaces/returns a provider's model map for providers already known in `database`. |
+| Environment | provider `env` vars | Activates a provider with `source: "env"` and optional key. |
+| Stored auth | `auth.all()` | Activates a provider with `source: "api"`. |
+| Built-in customizers | internal `custom(dep)` | Autoloads some providers, mutates options, installs model loaders/vars/discovery loaders. |
+| Discovery loader | internal `discoverModels` | Appends missing dynamically discovered models for providers with such a loader. |
+
+Observed docs:
+
+- Official docs describe Models.dev + AI SDK, `/connect`, `provider`, `model`, `small_model`, custom providers, `disabled_providers`, `enabled_providers`, `blacklist`, `whitelist`, variants, and `/models` selection.
+
+### Model list acquisition per provider
+
+Observed:
+
+- Baseline model lists come from each models.dev provider's `models` map.
+- Config can add or override provider model entries under `provider.<providerID>.models`.
+- V1 `ProviderHook.models` can return a model map for a provider.
+- Internal discovery loaders can append models after provider activation.
+- Some models.dev `experimental.modes` become additional synthetic model IDs.
+
+Inference:
+
+- OpenCode does not generally call each live provider's `/models` endpoint during normal catalog construction. Dynamic live discovery exists only through explicit provider-specific discovery loaders and selected plugin/provider implementations.
+
+### Catalog data structures
+
+V1 active structure:
+
+```ts
+type ProviderCatalog = Record<ProviderID, {
+  id: ProviderID
+  name: string
+  source: "env" | "config" | "custom" | "api"
+  env: string[]
+  key?: string
+  options: Record<string, any>
+  models: Record<ModelID, ProviderModel>
+}>
+```
+
+V1 model structure (normalized from code):
+
+```ts
+type ProviderModel = {
+  id: ModelID
+  providerID: ProviderID
+  api: { id: string; url: string; npm: string }
+  name: string
+  family?: string
+  capabilities: {
+    temperature: boolean
+    reasoning: boolean
+    attachment: boolean
+    toolcall: boolean
+    input: { text: boolean; audio: boolean; image: boolean; video: boolean; pdf: boolean }
+    output: { text: boolean; audio: boolean; image: boolean; video: boolean; pdf: boolean }
+    interleaved: boolean | { field: "reasoning" | "reasoning_content" | "reasoning_details" }
+  }
+  cost: {
+    input: number
+    output: number
+    cache: { read: number; write: number }
+    tiers?: Array<{ input: number; output: number; cache: { read: number; write: number }; tier: { type: "context"; size: number } }>
+    experimentalOver200K?: { input: number; output: number; cache: { read: number; write: number } }
+  }
+  limit: { context: number; input?: number; output: number }
+  status: "alpha" | "beta" | "deprecated" | "active"
+  options: Record<string, any>
+  headers: Record<string, string>
+  release_date: string
+  variants?: Record<string, Record<string, any>>
+}
+```
+
+V2 available model structure:
+
+```ts
+type ModelV2Info = {
+  id: ModelID
+  providerID: ProviderID
+  family?: string
+  name: string
+  api: Api
+  capabilities: { tools: boolean; input: string[]; output: string[] }
+  request: { headers: Record<string, string>; body: Record<string, Json>; variant?: string }
+  variants: Array<{ id: VariantID; headers: Record<string, string>; body: Record<string, Json> }>
+  time: { released: number }
+  cost: Array<{ tier?: { type: "context"; size: number }; input: number; output: number; cache: { read: number; write: number } }>
+  status: "alpha" | "beta" | "deprecated" | "active"
+  enabled: boolean
+  limit: { context: number; input?: number; output: number }
+}
+```
+
+Observed answer to `AvailableModel[]`:
+
+- V1: no canonical `AvailableModel[]`; canonical service shape is provider-indexed. ACP derives `modelOptions` as a flattened list for UI/config consumers.
+- V2: `catalog.model.available()` is the closest actual equivalent to `AvailableModel[]`, returning `ModelV2.Info[]`.
+
+### Merge, filtering, duplicates, aliases
+
+Observed:
+
+- Merge is mostly provider-key and model-key based. Same provider/model keys merge or overwrite depending on phase; different providers are distinct identities.
+- Config model aliases are represented by separating `modelID` (OpenCode-facing key) from `api.id` (provider-facing ID).
+- There is no global dedupe across providers. `providerID/modelID` is the identity.
+- Hardcoded alias removal exists only for a narrow set of invalid chat aliases.
+- Alpha models are hidden unless experimental model runtime flags allow them; deprecated models are removed.
+- `disabled_providers` and `enabled_providers` gate provider inclusion.
+- Provider `blacklist` and `whitelist` gate model inclusion.
+- Variants are generated and then config-merged; disabled variants are removed.
+
+Inference:
+
+- A Decision Engine should treat `providerID/modelID[/variant]` as the stable identity and should not assume model names are globally unique.
+
+### Consumers
+
+Observed V1 consumers:
+
+| Consumer | Catalog API used | Purpose |
+|---|---|---|
+| Active prompt path / `SessionPrompt` | `Provider.getModel`, `Provider.defaultModel` | Resolve selected/default model before LLM execution. |
+| Agents | `Provider.defaultModel`, `Provider.getModel` | Validate/resolve agent model. |
+| ACP directory | `Provider.list`, `Provider.defaultModel` | Build provider snapshot, flattened `modelOptions`, variants, default model. |
+| ACP config options | flattened providers/models | Build model and variant selector values. |
+| HTTP instance provider handler | `ModelsDev.get`, `Provider.list` | Return `all`, `default`, `connected` providers. |
+| Compaction / plan / sharing | `Provider.getModel`, `Provider.defaultModel` | Resolve model metadata for secondary flows. |
+
+Observed V2 consumers:
+
+| Consumer | Catalog API used | Purpose |
+|---|---|---|
+| `packages/server` model/provider handlers | `catalog.model.available`, `catalog.provider.available` | Server API for available V2 models/providers. |
+| V2 runner model selection | `catalog.model.available` | Pick active V2 model. |
+| V2 plugins | `catalog.transform` draft | Mutate provider/model/default catalog. |
+
+### Dynamic behavior
+
+Observed:
+
+- `ModelsDev.Service` can refresh from upstream, but `get()` is cached indefinitely until invalidation.
+- `Provider.Service` computes an `InstanceState` snapshot of effective providers; prompt execution uses this service state and does not rediscover providers per call.
+- `/connect`, config reloads, process restart, or service reload boundaries may alter the effective catalog, but this was not runtime-tested in this iteration.
+
+Hypothesis:
+
+- In the current product, model picker changes after `/connect` likely depend on service/app reload or explicit state invalidation paths outside the inspected snippets. This is not necessary to answer the static construction mechanism.
+
+### Decision Engine verdict
+
+Confirmed:
+
+- OpenCode already builds a rich internal model inventory with IDs, capabilities, modalities, limits, prices, variants, status, and provider materialization details.
+- The active/V1 reusable inventory is `Provider.Service.list()` plus `getModel()`/`defaultModel()`.
+- The V2 reusable inventory is cleaner for decisioning: `Catalog.Service.model.available()` returns a flattened `ModelV2.Info[]`.
+
+Inference:
+
+- An **in-process** Decision Engine integrated into OpenCode core could reuse the existing catalog and should not reconstruct models.dev/config/auth/provider merging independently.
+- A **standalone external** Decision Engine can reuse the catalog only through whatever OpenCode server/client endpoint is available; otherwise it must reconstruct equivalent logic or be given a new API.
+- A **V1 plugin** today cannot directly and officially reuse the complete active catalog through the documented plugin context. It would need a client call to OpenCode APIs or a new supported hook/service exposure.
+
+Verdict:
+
+> A future Decision Engine can reuse OpenCode's catalog infrastructure if it runs inside OpenCode's service graph or consumes a catalog API. It should not rebuild the catalog by scraping providers. However, under today's documented V1 plugin surface, the complete active catalog is internal; plugin-level reuse would require an API call or a new OpenCode-supported catalog service/hook.
+
+---
+
 ## Position 1: Client-Side Preprocessor
 
 ### Description
