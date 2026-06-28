@@ -375,6 +375,175 @@ Verdict:
 
 ---
 
+## Practical Routing Through Agents/Subagents (EVID-007, EVID-008)
+
+This section reorients Study-002 from a generic external router toward a practical OpenCode-native architecture: specialized agents/subagents with fixed models, prompts, and permissions.
+
+### Documented officially
+
+| Feature | Official status | Practical meaning |
+|---|---|---|
+| Primary agents | Documented | Main assistants selected directly by user/TUI/CLI/default agent. |
+| Subagents | Documented | Specialized assistants callable by primary agents or user `@` mention. |
+| Agent `model` | Documented | Each agent can pin a model optimized for that task. |
+| Subagent inheritance | Documented | If a subagent has no model, it uses the invoking primary agent's model. |
+| Manual invocation | Documented | User can invoke `@subagent` explicitly. |
+| Automatic invocation | Documented | Primary model can call subagents through Task tool based on descriptions. |
+| Permissions | Documented | Each agent can be read-only, edit-capable, shell-restricted, etc. |
+| `permission.task` | Documented | A primary/orchestrator agent can expose only selected subagents to the model. |
+| `hidden` | Documented | Hide subagents from autocomplete while keeping them callable by Task tool. |
+| `default_agent` | Documented | Choose the default primary agent globally/project-wide. |
+
+### Implemented in code
+
+The implementation gives a concrete routing flow:
+
+```text
+Parent assistant turn
+  │
+  ├─ Task tool selected automatically by model
+  │       OR
+  ├─ user writes @subagent, converted to agent part
+  │
+  ▼
+TaskTool.execute({ subagent_type, prompt })
+  │
+  ├─ Agent.get(subagent_type)
+  ├─ create/resume child session:
+  │     parentID = parent session
+  │     agent = subagent name
+  │     permission = derived child permissions
+  │
+  ├─ model = subagent.model ?? parent assistant message model
+  │
+  └─ prompt child session with:
+        sessionID = child session
+        agent = subagent name
+        model = selected model
+        parts = generated/resolved prompt parts
+```
+
+Observed source behavior:
+
+- `Agent.Info` supports `mode`, `model`, `prompt`, `permission`, `options`, `temperature`, `topP`, `variant`, `steps`, `hidden`, and `description`.
+- Primary prompt model resolution remains `input.model ?? ag.model ?? currentModel(sessionID)`.
+- Task-tool subagent model resolution is `next.model ?? parent assistant message model`.
+- Therefore a configured subagent model prevails over the main session model for that child session.
+- If the subagent lacks a model, it inherits the actual model used by the invoking assistant message.
+- User `@agent` mentions are represented as `agent` parts and converted into a synthetic instruction to call Task tool with that subagent.
+- The Task tool result is returned to the parent as a structured tool output containing task session ID and text result.
+
+### Proven in runtime
+
+Runtime evidence already available in this study:
+
+- EVID-004 proved the active live prompt path is V1, not V2, and that V1 hooks fire while V2 `aisdk.language` does not.
+- This matters because the agent/subagent approach works with the active V1 path; it does not depend on V2 provider-interception hooks.
+
+Runtime evidence not yet collected:
+
+- No new prompt was run in this iteration to create a custom fixed-model subagent and inspect the resulting child session record.
+- No local log/API recipe was validated for extracting the exact model used by each child session.
+
+### Inferred
+
+- Agents/subagents are not a general dynamic router. They do not inspect every prompt and choose among arbitrary models unless a primary/orchestrator model decides to call a subagent.
+- They are a strong practical router when work categories are stable and recognizable: legal audit, JSON audit, question linking, refactor, senior review, validation.
+- The routing decision moves from "choose a model every time" to "choose or let OpenCode choose a specialist lane". The lane owns model, prompt, tools, and permissions.
+- Manual `@` invocation is the reliable override; automatic Task-tool invocation is convenient but depends on descriptions, permissions, and parent model judgment.
+
+### Context, tools, and return path
+
+Observed context behavior:
+
+- The subagent receives a child session, not just an inline function call.
+- The child user message is built from the Task-tool `prompt` after `resolvePromptParts`; file references can be expanded/resolved.
+- The child session records `parentID`, agent, model, permissions, metadata, tokens and cost.
+- The parent should include required context in the Task-tool prompt; the child should not be assumed to see the full parent transcript unless it is summarized or referenced explicitly.
+
+Observed tool behavior:
+
+- Available tools are resolved using the subagent's `permission` and the selected model.
+- Parent session deny rules and external-directory constraints are inherited into child session permissions.
+- `permission.task` on the parent filters which subagents appear in the Task tool description.
+- `todowrite` and `task` are denied by default for subagents unless explicitly allowed.
+
+Observed return behavior:
+
+```xml
+<task id="ses_child" state="completed">
+<task_result>
+...
+</task_result>
+</task>
+```
+
+- Background subagents require the experimental background flag and can inject a later synthetic result into the parent session.
+- Parent agent sees the returned result text; deeper inspection requires navigating into or querying the child session.
+
+### Verifying the model used
+
+Implemented/observable from source:
+
+- Child session has `parentID`, `agent`, and `model` fields.
+- User messages store `model: { providerID, modelID, variant }` and `agent`.
+- Assistant messages/logs include provider/model/agent/mode.
+- Task-tool metadata contains `parentSessionId`, `sessionId`, and selected `model`.
+- The system prompt visible to the model includes the exact model ID.
+
+Not yet runtime-tested here:
+
+- Best local operational command/API for extracting the child session record and message model after a real run.
+
+### Limitations as practical routing
+
+| Limitation | Consequence | Mitigation |
+|---|---|---|
+| Static lane model | No per-prompt optimization inside a lane | Keep lanes coarse and adjust manually when needed. |
+| Automatic invocation is model judgment | Parent may choose wrong subagent or not call one | Use explicit `@subagent` for high-value tasks. |
+| Context is not magically shared | Subagent may miss parent assumptions | Require parent to pass compact task brief, files, constraints, expected output. |
+| More agents add cognitive overhead | Too many lanes recreate model-selection burden | Start with 6-8 stable lanes, not dozens. |
+| Model IDs can go stale | Config may break after provider/catalog changes | Add a validation check to list agents and resolve models. |
+| Tool permissions can surprise | Subagent may be too weak or too powerful | Make permissions part of each lane design. |
+| Not a generic cost/latency optimizer | Does not choose cheapest model dynamically | Use cheaper fixed models for known cheap lanes. |
+| Runtime audit workflow still unvalidated | Harder to prove actual usage operationally | Run minimal child-session test before adopting. |
+
+### Conceptual architecture for the oposiciones app
+
+Primary agents:
+
+| Agent | Mode | Role | Model class | Permissions |
+|---|---|---|---|---|
+| `opos-orchestrator` | primary | Default daily coordinator; decides whether to answer directly or delegate | Balanced coding/reasoning model | Task allowed to selected subagents; edits ask/deny depending preference |
+| `opos-build` | primary | Direct implementation lane for normal Next.js work | Strong coding model | Edit/bash allowed or ask |
+| `opos-plan` | primary | Planning and analysis without writes | Cheaper/fast reasoning model | Edit deny; bash ask/deny |
+
+Subagents:
+
+| Subagent | Purpose | Model class | Permissions | Invocation |
+|---|---|---|---|---|
+| `cte-legal-auditor` | Check CTE/legal corpus interpretation, trace citations, identify normative risks | High-accuracy long-context reasoning model | Read/grep/glob/webfetch allowed; edit denied | Manual for audits; automatic from orchestrator for legal questions |
+| `json-audit` | Validate audit JSON, schemas, invariants, idempotency | Deterministic cheaper model or strong structured-output model | Read/grep/bash test commands ask/allow; edit denied by default | Manual before importing or after generation |
+| `question-linker` | Link questions to corpus/legal references, detect weak links and duplicates | Long-context semantic model | Read/grep/glob allowed; edit ask if it writes candidate links | Automatic/manual depending batch size |
+| `next-refactor` | Implement focused Next.js/TypeScript refactors | Strong coding model | Edit/bash allowed or ask | Manual when implementation is desired |
+| `senior-reviewer` | Review diffs for regressions, architecture, security, tests | Strong reasoning/coding review model | Read/grep/git diff/log allowed; edit denied | Manual before commit/merge |
+| `validation-runner` | Run tests, typecheck, lint, migrations, summarize failures | Fast model with shell competence | Bash allow for safe test commands; edit denied | Manual after implementation |
+| `commit-preparer` | Inspect status/diff/log, propose commit message, optionally commit only on explicit user request | Reliable concise coding model | Git status/diff/log allow; commit ask; push deny/ask | Manual at end of completed work |
+
+Recommended operating pattern:
+
+1. Use `opos-orchestrator` as default for broad requests.
+2. Use explicit `@cte-legal-auditor`, `@json-audit`, `@question-linker`, or `@senior-reviewer` when correctness matters more than speed.
+3. Use `opos-build`/`next-refactor` only for write-intended tasks.
+4. Keep validation and commit preparation separate from implementation.
+5. Start with fixed models per lane; do not add dynamic routing until there is evidence that lane-level routing is insufficient.
+
+Practical verdict:
+
+> Yes. For the app de oposiciones, fixed-model OpenCode agents/subagents are a better near-term solution than a generic external router. They match the real recurring work types, use documented OpenCode mechanisms, preserve manual override, give permission boundaries, and are auditable through sessions/messages/logs. They do not replace a future adaptive router, but they likely solve the daily model-selection burden with much less complexity.
+
+---
+
 ## Position 1: Client-Side Preprocessor
 
 ### Description

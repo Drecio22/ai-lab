@@ -131,3 +131,51 @@ Partially resolved. Static inspection confirms the internal catalog exists and i
 
 **What could resolve it**:
 Inspect generated SDK routes and server API schemas for provider/model endpoints, then run a non-mutating API call against a live instance to verify which endpoint returns the effective active catalog needed by a Decision Engine.
+
+---
+
+### U-009: Runtime verification workflow for fixed-model subagents
+
+**What is unknown**:
+The most reliable user-facing way to verify, after a real OpenCode run, which exact model each primary agent and subagent used: CLI export, debug endpoint, local database query, server API, logs, or UI child-session inspection.
+
+**Why it matters**:
+Source code shows model precedence and persistence, but a practical daily workflow needs a simple audit path: "this subagent actually ran with provider/model X". This is especially important if fixed-model agents replace manual model selection.
+
+**Current status**:
+Partially resolved by source inspection. EVID-008 shows the fields are recorded (`Session.Info.model`, message model fields, Task tool metadata, LLM logs). Not resolved operationally: no runtime prompt was executed in this iteration and no extraction workflow was validated.
+
+**What could resolve it**:
+Create one temporary test subagent with a harmless local/cheap model, run a single `@subagent` prompt, then inspect: child session `parentID/agent/model`, user/assistant message provider/model, Task tool metadata, and visible logs. Document the lowest-friction verification command/API.
+
+---
+
+### U-010: Automatic subagent routing quality
+
+**What is unknown**:
+How reliably the parent model chooses the intended subagent from descriptions alone for real oposiciones workflows.
+
+**Why it matters**:
+Manual `@` invocation is deterministic, but automatic invocation is only useful if descriptions and permissions make the correct lane obvious. Poor automatic selection would still leave the user doing most routing manually.
+
+**Current status**:
+Unknown. Official docs say automatic invocation exists; source shows available subagent descriptions are injected into the Task tool description. No task-selection benchmark was run.
+
+**What could resolve it**:
+Run a small scenario suite with representative prompts: CTE/legal audit, JSON audit, question linking, Next.js refactor, senior review, validation. Record whether the orchestrator calls the expected subagent and whether manual `@` remains preferable.
+
+---
+
+### U-011: Context boundary for child sessions in daily use
+
+**What is unknown**:
+How much context the parent must explicitly pass for subagents to perform well across long, multi-step app work.
+
+**Why it matters**:
+Child sessions provide isolation and traceability, but they can miss implicit parent context. If every delegation requires large prompt engineering, practical value decreases.
+
+**Current status**:
+Partially resolved by source inspection. The child receives the Task-tool prompt and resolved parts in a child session; it does not automatically receive the parent transcript as ordinary child chat history. Best prompting conventions are not yet tested.
+
+**What could resolve it**:
+Define and test a minimal delegation template: objective, files, constraints, acceptance criteria, expected output format, and relevant parent findings. Compare subagent output with/without the template.

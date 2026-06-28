@@ -264,3 +264,117 @@ Summary:
 
 Related claims:
 - CLAIM-017, CLAIM-018, CLAIM-019, CLAIM-020, CLAIM-021
+
+---
+
+EVID-007
+Type:
+official-docs
+
+Source:
+OpenCode official documentation, `https://opencode.ai/docs/agents/` and `https://opencode.ai/docs/config/`, consulted 2026-06-29.
+
+Summary:
+- Agents are specialized AI assistants configurable for tasks/workflows with custom prompts, models, and tool access.
+- OpenCode documents two agent types: primary agents and subagents. Primary agents are the main assistants; subagents are specialized assistants that primary agents can invoke for specific tasks.
+- Built-in primary agents: `build` and `plan`. Built-in subagents documented: `general`, `explore`, and `scout`. Hidden system agents include `compaction`, `title`, and `summary`.
+- Subagents can be invoked automatically by primary agents based on their descriptions, or manually by `@` mentioning the subagent.
+- Agents can be configured in `opencode.json` under `agent`, or as Markdown files in `~/.config/opencode/agents/` and `.opencode/agents/`.
+- Agent options documented include `description`, `temperature`, `steps`, `disable`, `prompt`, `model`, deprecated `tools`, `permission`, `mode`, `hidden`, `permission.task`, `color`, `top_p`, and provider-specific additional options.
+- The `model` option overrides the model for that agent. Official docs state that if no model is specified, primary agents use the globally configured model, while subagents use the model of the primary agent that invoked them.
+- `mode` can be `primary`, `subagent`, or `all`; if omitted, it defaults to `all`.
+- `hidden: true` hides a subagent from `@` autocomplete but still allows model invocation through the Task tool if permissions allow.
+- `permission.task` controls which subagents an agent can invoke through the Task tool. Docs state users can still invoke any subagent directly via `@` autocomplete even if task permissions would deny it.
+- Config docs document `default_agent`, which must be a primary agent and applies across TUI, CLI (`opencode run`), desktop app, and GitHub Action.
+
+Documented officially:
+- Agent/subagent concepts, model field, mode field, permissions, manual and automatic subagent invocation, config locations, and default agent behavior.
+
+Not documented in this source:
+- The exact internal child-session mechanics, exact model precedence expression in `TaskTool`, database tables/fields, or precise runtime logs.
+
+Related claims:
+- CLAIM-023, CLAIM-024, CLAIM-025, CLAIM-027, CLAIM-029
+
+---
+
+EVID-008
+Type:
+source-code
+
+Source:
+Static source inspection over anomalyco/opencode local checkout at `C:\Users\danie\AppData\Local\Temp\opencode\opencode-src`, consulted 2026-06-29. Same source lineage as previous Study-002 inspections unless otherwise noted.
+
+Summary:
+
+### A. Agent definition and config merge
+
+- `packages/opencode/src/agent/agent.ts:35-55` defines `Agent.Info` with `name`, optional `description`, `mode` (`subagent`, `primary`, `all`), optional `native`, `hidden`, `topP`, `temperature`, `color`, `permission`, optional `model`, optional `variant`, optional `prompt`, `options`, and optional `steps`.
+- Built-in agents are created in `agent.ts:140-265`: `build` and `plan` are primary; `general` and `explore` are subagents in this checkout; `compaction`, `title`, and `summary` are hidden primary/system agents.
+- User config merges into these definitions in `agent.ts:267-294`: `model` is parsed with `Provider.parseModel`, and config can override prompt, description, temperature, top_p, mode, color, hidden, name, steps, options, and permission.
+- `defaultInfo()` rejects a configured default agent if it is a subagent or hidden (`agent.ts:328-339`).
+
+### B. Primary prompt model resolution
+
+- `SessionPrompt.createUserMessage` loads the requested/default agent and resolves model as `input.model ?? ag.model ?? currentModel(input.sessionID)` (`packages/opencode/src/session/prompt.ts:635-667`). It persists the resolved agent/model to session state when changed (`prompt.ts:672-689`).
+
+### C. Task tool delegation and subagent model precedence
+
+- `TaskTool` parameter schema includes `description`, `prompt`, `subagent_type`, optional `task_id`, and optional `command` (`packages/opencode/src/tool/task.ts:43-62`).
+- It resolves `next = agent.get(params.subagent_type)` (`task.ts:116-119`).
+- It creates or resumes a child session. New child sessions use `parentID: ctx.sessionID`, title `description + (@subagent)`, `agent: next.name`, and derived permissions (`task.ts:121-158`).
+- It reads the parent assistant message and computes `model = next.model ?? { modelID: msg.info.modelID, providerID: msg.info.providerID }` (`task.ts:160-170`). This confirms that configured subagent model prevails over parent session model; otherwise the child inherits the invoking assistant message model.
+- It stores task metadata with `parentSessionId`, `sessionId`, and `model` (`task.ts:171-181`).
+- It prompts the child session with `model`, `agent: next.name`, and resolved prompt parts (`task.ts:186-199`). If the subagent has its own model, parent `variant` is not inherited (`variant: next.model ? undefined : variant`, `task.ts:191-196`).
+
+### D. Manual `@agent` invocation
+
+- `resolvePromptParts` treats unresolved inline references that match an agent name as `{ type: "agent", name: found.name }` (`session/prompt.ts:157-190`).
+- User message part resolution handles `part.type === "agent"` by preserving the agent part and appending a synthetic instruction to call the task tool with that subagent (`session/prompt.ts:974-990`).
+- During tool resolution, `bypassAgentCheck` is set if the last user message includes an `agent` part (`session/prompt.ts:1221-1233`), allowing direct user invocation to bypass the normal Task-tool permission check in `TaskTool` (`tool/task.ts:104-114`).
+- UI/CLI reconstruction preserves `agent` parts with source spans (`packages/app/src/utils/prompt.ts:115-126`, `163-190`; `packages/opencode/src/cli/cmd/run/session.shared.ts:116-126`).
+
+### E. Automatic invocation and tool exposure
+
+- `ToolRegistry.describeTask` lists all agents where `mode !== "primary"`, filters them by `Permission.evaluate("task", item.name, agent.permission) !== "deny"`, and appends `- name: description` lines to the Task tool description (`packages/opencode/src/tool/registry.ts:252-264`). This is how the model sees available subagent types and their descriptions.
+
+### F. Tool permissions and child-session permissions
+
+- `deriveSubagentSessionPermission` includes parent session rules where `permission === "external_directory"` or `action === "deny"`; it also denies `todowrite` and `task` unless the subagent explicitly has those permissions (`packages/opencode/src/agent/subagent-permissions.ts:14-27`).
+- `TaskTool` adds default child denies for `todowrite`, `task`, and any experimental primary-only tools (`tool/task.ts:125-141`).
+- Tool execution context carries session ID, assistant message ID, model, agent, messages, metadata callback, and permission evaluator; registry tools are resolved with the selected model and agent (`packages/opencode/src/session/tools.ts:56-94`).
+
+### G. Result return and runtime records
+
+- `TaskTool.renderOutput` wraps results as `<task id="..." state="...">` with `<task_result>` or `<task_error>` (`tool/task.ts:64-78`). Foreground task completion returns that rendered output (`task.ts:303-320`). Background mode can start/extend jobs and inject synthetic result prompts into the parent (`task.ts:202-228`, `242-293`).
+- `Session.Info` includes `parentID`, `agent`, `model`, `metadata`, `permission`, cost, and tokens (`packages/opencode/src/session/session.ts:80-149`, `220-273`).
+- `SessionPrompt.createUserMessage` writes user message `agent` and `model` fields, and updates session agent/model state (`session/prompt.ts:656-689`).
+- `LLM.run` logs provider/model/session/small/agent/mode at stream start and runtime selection/error points (`packages/opencode/src/session/llm.ts:85-93`, `244-258`, `271-290`).
+- `SystemPrompt.environment` injects `You are powered by the model named ... The exact model ID is provider/model` into the model-visible system context (`packages/opencode/src/session/system.ts:58-66`).
+
+Implemented in code:
+- Fixed agent model config, subagent model precedence, child sessions, Task-tool result return, task metadata, permission inheritance/filtering, and user `@agent` path.
+
+Not proven by this evidence alone:
+- The exact user-facing command/API path that most conveniently retrieves child-session message records and logs in a local installation.
+
+Related claims:
+- CLAIM-023, CLAIM-024, CLAIM-025, CLAIM-026, CLAIM-027, CLAIM-028, CLAIM-029
+
+---
+
+EVID-009
+Type:
+runtime-status
+
+Source:
+Current iteration, 2026-06-29.
+
+Summary:
+- No new live prompt was executed in this iteration to prove a configured custom subagent model at runtime.
+- Existing EVID-004 remains relevant only for V1 vs V2 prompt-path behavior and V1 hook activity; it does not validate the new fixed-model subagent architecture with a real child session.
+- The source-code evidence is direct and high-confidence for model precedence, but a minimal runtime verification remains useful before relying on this operationally.
+
+Related claims:
+- CLAIM-028
+- U-009

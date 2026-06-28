@@ -76,3 +76,24 @@ input.model ?? agent.model ?? currentModel(sessionID)
 This resolution happens **before** `runLoop`, `Provider.getModel`, `SessionProcessor.process`, and `LLM.stream` execute. After this point, no further model selection occurs — only materialization and execution.
 
 Therefore, Q-001 asks: at what architectural layer can we inject routing logic **before** or **instead of** this static resolution?
+
+---
+
+Q-004
+Question:
+Can OpenCode's agent/subagent architecture, with fixed per-agent models, serve as a practical routing layer for daily work without adding an external router?
+
+State:
+answered (this iteration; source/docs evidence, no new runtime prompt test)
+
+Related to:
+agents, subagents, model-selection, practical-routing, task-tool, app-oposiciones
+
+Answer summary (supported by EVID-007, EVID-008; runtime caveat in U-009):
+
+- Official docs define two agent types: primary agents used directly, and subagents invoked by primary agents or by user `@` mentions.
+- Agents/subagents can define a fixed `model`. Official docs state that a subagent without a model uses the invoking primary agent's model.
+- Source code confirms stronger precedence for task delegation: `TaskTool` uses `next.model ?? parent assistant message model`, then passes that model explicitly into the child session prompt. Therefore a subagent's configured model prevails over the parent session model for that child run.
+- Invocation is both automatic and manual: automatic through the `task` tool exposed to the model using subagent descriptions, and manual through `@agent` mention.
+- Tools are governed by each subagent's permissions plus inherited deny/external-directory constraints from the parent session. Results return as task tool output and child sessions record agent/model metadata.
+- Practical verdict: yes, for a human-in-the-loop workflow this is a better near-term answer than a generic external router. It replaces opaque per-request routing with explicit, inspectable work lanes: legal/corpus audit, JSON audit, question linking, Next.js refactor, senior review, and release validation.
